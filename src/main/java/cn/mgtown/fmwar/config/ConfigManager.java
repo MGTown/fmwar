@@ -51,10 +51,16 @@ public final class ConfigManager {
 
     private final FMWar plugin;
     private final File file;
+    /** 行为限制区域的独立配置文件（见 {@link ActionBlockedConfig}）。 */
+    private final File actionBlockedFile;
     private final LootParser lootParser;
 
     private volatile Settings settings;
     private volatile Spec.Validation validation = new Spec.Validation(List.of());
+    /** 行为限制区域快照；解析失败时保留上一份。 */
+    private volatile ActionBlockedConfig actionBlocked = ActionBlockedConfig.EMPTY;
+    /** 行为限制区域的校验问题（供 /fmwar doctor 打印）。 */
+    private volatile Spec.Validation actionBlockedValidation = new Spec.Validation(List.of());
     /** 本次加载中缺失的必填键（用于 validate 报告，避免靠“值为 0”猜）。 */
     private volatile java.util.Set<String> missingRequired = java.util.Set.of();
 
@@ -91,6 +97,7 @@ public final class ConfigManager {
     public ConfigManager(FMWar plugin) {
         this.plugin = plugin;
         this.file = new File(plugin.getDataFolder(), "config.yml");
+        this.actionBlockedFile = new File(plugin.getDataFolder(), "action-blocked.yml");
         this.lootParser = new LootParser(message -> plugin.getLogger().warning("[config] " + message));
     }
 
@@ -104,6 +111,14 @@ public final class ConfigManager {
 
     public Spec.Validation validation() {
         return validation;
+    }
+
+    public ActionBlockedConfig actionBlocked() {
+        return actionBlocked;
+    }
+
+    public Spec.Validation actionBlockedValidation() {
+        return actionBlockedValidation;
     }
 
     /** 保存默认配置（不存在时）并加载；返回是否加载成功。 */
@@ -132,9 +147,122 @@ public final class ConfigManager {
         }
         this.settings = parsed;
         this.validation = checked;
+        // 行为限制区域是独立文件：放在 config.yml 成功之后再读，且它的成败不影响
+        // 上面这份配置——两者互不牵制，改坏一个不会连带把另一个拖下水
+        loadActionBlocked();
         plugin.getLogger().info("配置加载完成");
         return true;
     }
+
+    /**
+     * 加载行为限制区域（动作受限区域）。
+     *
+     * <p>与 config.yml 的三个区别：</p>
+     * <ol>
+     *   <li>文件不存在时用 jar 内置默认释放一份——它只是「一个可以随时改的区域清单」，
+     *       不像 config.yml 那样承载关键项；</li>
+     *   <li>单个区域写错只**跳过该区域**并报错，其余区域照常生效（不会整份作废）；</li>
+     *   <li>整份文件读不出来时保留上一份限制区域，不动进行中的对局。</li>
+     * </ol>
+     */
+    private void loadActionBlocked() {
+        if (!actionBlockedFile.exists()) {
+            plugin.saveResource("action-blocked.yml", false);
+        }
+        FileConfiguration yaml;
+        try {
+            yaml = YamlConfiguration.loadConfiguration(actionBlockedFile);
+        } catch (RuntimeException exception) {
+            plugin.getLogger().warning("action-blocked.yml 读取失败，已保留上一份限制区域："
+                    + exception.getMessage());
+            return;
+        }
+        List<Spec.Problem> problems = new ArrayList<>();
+        ActionBlockedConfig parsed = parseActionBlocked(yaml, problems);
+        this.actionBlockedValidation = new Spec.Validation(List.copyOf(problems));
+        this.actionBlocked = parsed;
+        if (problems.isEmpty()) {
+            plugin.getLogger().info("行为限制区域加载完成：" + parsed.describe());
+        } else {
+            // 一行汇总 + 逐条问题：避免"某个区域静默不生效"这类只能靠试的现象
+            plugin.getLogger().warning("action-blocked.yml 存在 " + problems.size()
+                    + " 个问题，已跳过对应区域：" + this.actionBlockedValidation.describe());
+            plugin.getLogger().warning("行为限制区域加载完成：" + parsed.describe());
+        }
+    }
+
+    /**
+     * 解析 action-blocked.yml 的 regions 段。
+     *
+     * <p>支持两种区域写法（与 config.yml 的 regions 一致）：</p>
+     * <pre>
+     * min: [x, y, z] / max: [x, y, z]      # 两个角点，顺序无关
+     * x: 260 / y: 310 / z: 7135 /           # 区域块，与 /fill 记法相同，dx/dy/dz 可为负
+     * dx: 385 / dy: -310 / dz: -385
+     * </pre>
+     *
+     * @param problems 输出参数：写入该段里的问题（不阻断其余区域）
+     */
+    private ActionBlockedConfig parseActionBlocked(FileConfiguration yaml, List<Spec.Problem> problems) {
+        // 顶层 world 缺省时回退到 config.yml 的 world——本文件允许跨世界，
+        // 但"只写 x/y/z 不写 world"是最省事的写法，给它一个合理的默认值
+        String fileWorld = yaml.getString("world", "");
+        if (fileWorld == null || fileWorld.isBlank()) {
+            fileWorld = settings == null ? "world" : settings.world();
+        }
+        List<ActionBlockedConfig.Area> areas = new ArrayList<>();
+        int index = 0;
+        for (Map<?, ?> raw : yaml.getMapList("regions")) {
+            index++;
+            String path = "regions[" + index + "]";
+            String name = raw.get("name") == null ? "#" + index : String.valueOf(raw.get("name")).trim();
+
+            String world = raw.get("world") == null
+                    ? fileWorld
+                    : String.valueOf(raw.get("world")).trim();
+            if (world.isBlank()) {
+                world = fileWorld;
+            }
+
+            Region region = parseActionBlockedRegion(raw, world, path, problems);
+            if (region == null) {
+                continue;
+            }
+            if (worldMissing(world)) {
+                // 世界没加载时区域仍在，只是永远判不中——报出来，交给服主核对世界名
+                problems.add(new Spec.Problem(path + ".world", "世界未加载: " + world));
+            }
+            // 区域不带“生效对象”开关：清单本身就是服主声明的适用范围（见 ActionBlockedConfig）
+            areas.add(new ActionBlockedConfig.Area(name, region));
+        }
+        return new ActionBlockedConfig(List.copyOf(areas));
+    }
+
+    /** 解析单个区域的几何范围；两种写法都不成立时返回 null 并记录问题。 */
+    private Region parseActionBlockedRegion(Map<?, ?> raw, String world, String path,
+                                            List<Spec.Problem> problems) {
+        double[] min = parseTriple(raw.get("min"));
+        double[] max = parseTriple(raw.get("max"));
+        if (min != null && max != null) {
+            return Region.of(world, min[0], min[1], min[2], max[0], max[1], max[2]);
+        }
+
+        Double x = toDouble(raw.get("x"));
+        Double y = toDouble(raw.get("y"));
+        Double z = toDouble(raw.get("z"));
+        if (x != null && y != null && z != null) {
+            // /fill 语义：从 (x,y,z) 到 (x+dx, y+dy, z+dz)，dx/dy/dz 缺省为 0（单个方块）
+            double dx = toDoubleOrDefault(raw.get("dx"), 0.0);
+            double dy = toDoubleOrDefault(raw.get("dy"), 0.0);
+            double dz = toDoubleOrDefault(raw.get("dz"), 0.0);
+            return Region.of(world, x, y, z, x + dx, y + dy, z + dz);
+        }
+
+        problems.add(new Spec.Problem(path,
+                "缺少 min/max 角点，或 x/y/z（可再加 dx/dy/dz），该区域已跳过"));
+        return null;
+    }
+
     // ------------------------------------------------------------------
     // 解析
     // ------------------------------------------------------------------
@@ -835,6 +963,9 @@ public final class ConfigManager {
     public void saveDefaultIfMissing() {
         if (!file.exists()) {
             plugin.saveResource("config.yml", false);
+        }
+        if (!actionBlockedFile.exists()) {
+            plugin.saveResource("action-blocked.yml", false);
         }
     }
 

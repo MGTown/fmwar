@@ -1,5 +1,6 @@
 package cn.mgtown.fmwar.service;
 
+import cn.mgtown.fmwar.config.ActionBlockedConfig;
 import cn.mgtown.fmwar.config.ConfigManager;
 import cn.mgtown.fmwar.config.Settings;
 
@@ -19,6 +20,15 @@ public final class ConfigService {
 
     public Settings settings() {
         return configManager.settings();
+    }
+
+    /**
+     * 行为限制区域（独立配置 action-blocked.yml）。
+     *
+     * <p>与 {@link #settings()} 一样是 volatile 快照，reload 后立即生效。</p>
+     */
+    public ActionBlockedConfig actionBlocked() {
+        return configManager.actionBlocked();
     }
 
     public ConfigManager manager() {

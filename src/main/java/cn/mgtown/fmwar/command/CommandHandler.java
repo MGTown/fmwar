@@ -514,6 +514,13 @@ public final class CommandHandler implements CommandExecutor, TabCompleter {
                 "world", config.settings().world(),
                 "chests", Integer.toString(config.settings().loot().chestLocations().size()),
                 "groups", Integer.toString(config.settings().loot().lootGroups().size())));
+        // 行为限制区域来自独立文件 action-blocked.yml：把它的自检结果一并报出来，
+        // 否则“某片区域写错被跳过”只会在启动日志里一闪而过，服主很难发现限制没生效
+        for (var problem : config.manager().actionBlockedValidation().problems()) {
+            reply(sender, alerts.component("&c - &f" + problem.path() + " &7" + problem.detail()));
+        }
+        line(sender, "doctor-action-blocked",
+                Map.of("detail", config.actionBlocked().describe()));
     }
 
     /**

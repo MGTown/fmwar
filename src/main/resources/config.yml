@@ -35,6 +35,10 @@ regions:
     min: [-1354, 39, -2041]
     max: [-894, 300, -1389]
   # 提示接收范围（比场地略大，只有范围内的玩家能看到游戏提示）
+  #
+  # 注意：自引入独立配置 action-blocked.yml 起，本项**只**决定「游戏提示对谁可见」。
+  # 「区域内禁止骑乘/潜行」的判定已迁到 action-blocked.yml ——
+  # 那里可以列出任意多片区域（可跨世界），并逐片指定是否只约束本局玩家。
   notify:
     min: [-1354, 39, -2041]
     max: [-857, 320, -1389]
@@ -384,7 +388,9 @@ messages:
   spectator-only-in-game: '{prefix}&c你正在游戏中，无法观战'
   spectator-enter: '{prefix}&7你已进入观战模式'
   arena-forbidden: '{prefix}&c对局进行中，无关玩家不能进入场地'
-  action-blocked: '{prefix}&c该动作在游戏场地范围内不允许'
+  # 行为限制提示。受限区域来自独立配置 action-blocked.yml（可跨世界、可多片），
+  # 因此文案不再写死“游戏场地”，否则在生存世界的限制区里提示会与事实不符。
+  action-blocked: '{prefix}&c此区域不允许该动作'
   spectator-arena-exit: '{prefix}&7你已离开场地范围'
   player-arena-exit: '{prefix}&c{player} &7离开了游戏'
   death: '{prefix}&c{player} &7死亡'
@@ -465,4 +471,6 @@ messages:
   doctor-loot-keys: '&7附魔键: &f共 {total} 个，&a可用 {ok}&7 / &c缺失 {missing}'
   doctor-loot-key-missing: '&c - 未注册: &f{key} &7(需要数据包或附魔插件提供)'
   doctor-world: '&7世界: &f{world} &7奖励箱: &f{chests} &7内容行: &f{groups}'
+  # {detail} 来自独立配置 action-blocked.yml，形如 "3 个 [game-arena@game, ...]"
+  doctor-action-blocked: '&7行为限制区域: &f{detail}'
   doctor-shop-line: '&7商店 &f{line}'
