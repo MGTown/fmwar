@@ -390,7 +390,7 @@ messages:
   arena-forbidden: '{prefix}&c对局进行中，无关玩家不能进入场地'
   # 行为限制提示。受限区域来自独立配置 action-blocked.yml（可跨世界、可多片），
   # 因此文案不再写死“游戏场地”，否则在生存世界的限制区里提示会与事实不符。
-  action-blocked: '{prefix}&c此区域不允许该动作'
+  action-blocked: '&c此区域不允许该动作'
   spectator-arena-exit: '{prefix}&7你已离开场地范围'
   player-arena-exit: '{prefix}&c{player} &7离开了游戏'
   death: '{prefix}&c{player} &7死亡'
