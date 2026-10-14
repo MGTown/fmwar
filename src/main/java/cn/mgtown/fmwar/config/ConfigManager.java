@@ -399,11 +399,6 @@ public final class ConfigManager {
                 yaml.getBoolean("extra-shops.enabled", true),
                 teams,
                 scoreboard,
-                new Settings.Residence(
-                        yaml.getBoolean("residence.enabled", true),
-                        yaml.getString("residence.flag", "move"),
-                        yaml.getStringList("residence.prep-regions"),
-                        yaml.getStringList("residence.arena-regions")),
                 new Settings.Cleanup(
                         yaml.getBoolean("cleanup.enabled", true),
                         (int) yaml.getLong("cleanup.chunks-per-tick", 4)),

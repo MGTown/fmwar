@@ -12,7 +12,6 @@ import cn.mgtown.fmwar.service.ButtonCapture;
 import cn.mgtown.fmwar.service.ConfigService;
 import cn.mgtown.fmwar.service.GameScoreboard;
 import cn.mgtown.fmwar.service.PointsService;
-import cn.mgtown.fmwar.service.ResidenceService;
 import cn.mgtown.fmwar.service.ShopService;
 import cn.mgtown.fmwar.service.TeamService;
 import cn.mgtown.fmwar.util.Schedulers;
@@ -36,7 +35,6 @@ public final class FMWar extends JavaPlugin {
     private ShopService shopService;
     private ButtonCapture buttonCapture;
     private PointsService pointsService;
-    private ResidenceService residenceService;
     private Schedulers schedulers;
     private GameEngine engine;
 
@@ -59,9 +57,8 @@ public final class FMWar extends JavaPlugin {
         gameScoreboard = new GameScoreboard(teamService, schedulers);
         shopService = new ShopService(this, configService);
         pointsService = new PointsService(this);
-        residenceService = new ResidenceService(this, configService, schedulers);
         engine = new GameEngine(this, configService, alertService, teamService,
-                gameScoreboard, shopService, pointsService, residenceService, schedulers);
+                gameScoreboard, shopService, pointsService, schedulers);
         buttonCapture = new ButtonCapture(configService, alertService);
 
         getServer().getPluginManager().registerEvents(

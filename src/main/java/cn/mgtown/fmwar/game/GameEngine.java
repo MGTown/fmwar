@@ -1,28 +1,25 @@
 package cn.mgtown.fmwar.game;
 
 import cn.mgtown.FMWar;
+import cn.mgtown.fmwar.config.Position;
+import cn.mgtown.fmwar.config.Region;
 import cn.mgtown.fmwar.config.Settings;
-import cn.mgtown.fmwar.service.AlertService;
-import cn.mgtown.fmwar.service.ArenaCleaner;
-import cn.mgtown.fmwar.service.ConfigService;
-import cn.mgtown.fmwar.service.GameScoreboard;
-import cn.mgtown.fmwar.service.ShopService;
-import cn.mgtown.fmwar.service.TeamService;
+import cn.mgtown.fmwar.service.*;
 import cn.mgtown.fmwar.util.Schedulers;
 import cn.mgtown.fmwar.util.TimeUtil;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
-import org.bukkit.Bukkit;
-import org.bukkit.GameMode;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.World;
+import org.bukkit.*;
+import org.bukkit.attribute.Attribute;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Chest;
 import org.bukkit.block.Container;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
@@ -31,31 +28,13 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-
-import cn.mgtown.fmwar.config.Position;
-import cn.mgtown.fmwar.config.Region;
-import cn.mgtown.fmwar.service.PointsService;
-import cn.mgtown.fmwar.service.ResidenceService;
-import org.bukkit.NamespacedKey;
-import org.bukkit.Registry;
-import org.bukkit.attribute.Attribute;
-import org.bukkit.block.Chest;
-import org.bukkit.enchantments.Enchantment;
 
 /**
  * 对局引擎：唯一的状态机 + 唯一的 20tick 主循环。
@@ -113,7 +92,6 @@ public final class GameEngine {
     private final GameScoreboard scoreboard;
     private final ShopService shops;
     private final PointsService points;
-    private final ResidenceService residence;
     /** 唯一的调度入口：四类 Paper 调度器，跨 Paper / Folia 可用。 */
     private final Schedulers schedulers;
 
@@ -250,7 +228,7 @@ public final class GameEngine {
 
     public GameEngine(FMWar plugin, ConfigService config, AlertService alerts,
                       TeamService teams, GameScoreboard scoreboard, ShopService shops,
-                      PointsService points, ResidenceService residence, Schedulers schedulers) {
+                      PointsService points, Schedulers schedulers) {
         this.plugin = plugin;
         this.config = config;
         this.alerts = alerts;
@@ -258,7 +236,6 @@ public final class GameEngine {
         this.scoreboard = scoreboard;
         this.shops = shops;
         this.points = points;
-        this.residence = residence;
         this.schedulers = schedulers;
         this.cleaner = new ArenaCleaner(plugin, config, schedulers);
     }
@@ -366,8 +343,6 @@ public final class GameEngine {
         // 回调里再访问区块同样不安全
         cleaner.cancel();
         forceCleanup();
-        // 强制复位领地权限：绝不能把“临时打开”的状态留在服务器上
-        residence.reset();
         points.save();
     }
 
@@ -807,7 +782,6 @@ public final class GameEngine {
             return;
         }
         queue.remove(uuid);
-        // 传送本身由 teleport() 临时放行后立即恢复，这里不需要额外处理领地权限
         teleport(player, config.settings().location("hall-spawn"));
         teams.leaveAll(uuid);
         scoreboard.detach(player);
@@ -911,8 +885,6 @@ public final class GameEngine {
             return;
         }
         queue.add(uuid);
-        // 需求：准备房间的领地常态关闭传送权限。传送本身走 teleport()，
-        // 它会在传送期间临时放行、传送完成立刻恢复，因此这里不需要常驻打开权限。
         teleport(player, config.settings().location("prep-spawn"));
         // 入队即挂上本插件的记分板：准备倒计时与进度的常驻显示依赖它
         scoreboard.attach(player, config.settings());
@@ -920,8 +892,8 @@ public final class GameEngine {
         alerts.broadcast("queue-join", Map.of("player", player.getName()));
         debug("玩家 " + player.getName() + " 加入队列，当前队列 " + queue.size() + " 人");
 
-        // 传送是异步的：领地插件若拦下这次传送，future 会以 false 完成。
-        // 届时必须把刚刚入队的玩家摘掉，否则会出现“人在大厅、队列里却有人”的幽灵状态，
+        // 传送是异步的：若传送被取消，future 会以 false 完成。
+        // 届时必须把刚刚入队的玩家摘掉，否则会出现"人在大厅、队列里却有人"的幽灵状态，
         // 准备房间人数判定会被它拉到 2 人从而启动倒计时。
         teleportAsyncWithResult(player, config.settings().location("prep-spawn").toLocation())
                 .whenComplete((ok, error) -> {
@@ -937,7 +909,7 @@ public final class GameEngine {
                         }
                         Player online = Bukkit.getPlayer(uuid);
                         String name = online == null ? player.getName() : online.getName();
-                        debug("玩家 " + name + " 入队传送失败（被领地/插件拦截或取消），已从队列移除");
+                        debug("玩家 " + name + " 入队传送失败（被拦截或取消），已从队列移除");
                         // 记分板与私发提示属于“玩家自身状态”，交回该玩家所属线程
                         if (online != null) {
                             schedulers.onEntity(online, () -> {
@@ -1064,8 +1036,6 @@ public final class GameEngine {
         // 准备阶段结束：把“准备人数”从同一块侧栏里收起，
         // 让 update() 写入的“剩余时间/存活人数”占据这块侧栏
         scoreboard.hidePrepRoom();
-        // 领地权限不在这里常驻打开：开局分散、传决斗圈、观战进场各自走 teleport()，
-        // 由它在每次传送期间临时放行、传送完成立刻恢复
         phase = GamePhase.RUNNING;
         timer = new Timer(GamePhase.RUNNING, Bukkit.getCurrentTick(), settings.timing().gameDurationSeconds() * 20L);
         members.clear();
@@ -2007,7 +1977,7 @@ public final class GameEngine {
                 }
                 recentEliminations.remove(uuid);
             }
-            // 冷却 + 目标在受保护区域内：即使某次传送被领地守卫取消，也不会形成每 tick 重传的循环
+            // 冷却 + 目标在受保护区域内：即使某次传送被取消，也不会形成每 tick 重传的循环
             Long until = outsiderCooldown.get(uuid);
             if (until != null && now < until) {
                 continue;
@@ -2083,7 +2053,6 @@ public final class GameEngine {
             // 先登记再传送：PlayerRespawnEvent 触发时才知道“这是被本插件淘汰的人”
             pendingRespawn.add(uuid);
         }
-        // 传送豁免：淘汰后的传送可能落到领地内，必须保证成功
         teleport(player, config.settings().location("hall-spawn"));
         if (deferredRespawn) {
             scheduleRespawn(player);
@@ -2132,8 +2101,8 @@ public final class GameEngine {
                 player.spigot().respawn();
             }
             pendingRespawn.remove(uuid);
-            // 传送这一步不能留在玩家线程上：teleport() 会先向领地插件下发 /res 指令，
-            // 而指令必须在权威线程派发。因此交回权威线程（Paper 上本就是同一个线程）。
+            // 传送必须在权威线程上执行：teleport() 内部会守卫到权威线程，
+            // 这里再显式交回权威线程（Paper 上本就是同一个线程）以防调用方不在主线程。
             schedulers.onMain(() -> teleport(player, config.settings().location("hall-spawn")));
         }, () -> pendingRespawn.remove(uuid));
     }
@@ -2561,9 +2530,7 @@ public final class GameEngine {
         timer = null;
         ended = false;
         phase = GamePhase.IDLE;
-        // 对局结束：把两处领地权限都恢复为服务器设定的常态（准备房间关闭、场地按服主配置）
-        residence.reset();
-        // 刻意不清 pendingHall：它描述的是“离线玩家下次上线怎么处理”，
+        // 刻意不清 pendingHall：它描述的是"离线玩家下次上线怎么处理"，
         // 生命周期跨越对局边界。若在这里清空，对局中掉线、结束后才上线的玩家会失去标记，
         // 直接以登出坐标留在场地里（需求 108 / 39 落空）。
     }
@@ -2603,9 +2570,8 @@ public final class GameEngine {
     /**
      * 传送到配置里的坐标点。
      *
-     * <p>插件不做任何传送权限判断：进入各区域的限制**完全交给领地插件（Residence）
-     * 自己的传送权限旗帜**。此前的实现自己拦截了进入保护区的传送，结果连管理员的
-     * {@code /tp} 与 {@code /res tp} 都被拦掉，属于越权——已移除。</p>
+     * <p>插件不做任何传送权限判断：进入各区域的限制完全由服务器自身的权限设置决定，
+     * 本插件只负责把玩家送到位，不做任何拦截或放行。</p>
      */
     public void teleport(Player player, Position target) {
         if (target == null) {
@@ -2618,13 +2584,12 @@ public final class GameEngine {
     /**
      * 与 {@link #teleport(Player, Location)} 相同，但把传送成败回传给调用方。
      *
-     * <p>领地插件通常在 PlayerTeleportEvent 里取消事件来拦人，这种情况下
-     * {@link Player#teleportAsync(Location)} 的 future 会完成为 {@code false}；
+     * <p>若传送被其它插件在 PlayerTeleportEvent 里取消，{@link Player#teleportAsync(Location)}
+     * 的 future 会完成为 {@code false}；
      * 调用方据此决定是否需要回滚副作用（例如把刚入队的玩家踢出队列）。</p>
      *
-     * <p><b>调用前提：必须在权威线程上调用。</b>它内部要经
-     * {@link ResidenceService#runWithAccess} 下发 {@code /res set} 指令，而指令派发只能在
-     * 权威线程。之所以不像 {@link #teleport(Player, Location)} 那样自带守卫，
+     * <p><b>调用前提：必须在权威线程上调用。</b>它内部直接调用 {@code teleportAsync}，
+     * 之所以不像 {@link #teleport(Player, Location)} 那样自带守卫，
      * 是因为这里必须把<b>真实</b>的 future 交回调用方——重排之后就没法再返回它了。
      * 目前的唯一调用方 {@link #tryJoinQueue} 已经在入口处被守卫，前提成立。</p>
      */
@@ -2634,32 +2599,29 @@ public final class GameEngine {
             return CompletableFuture.completedFuture(false);
         }
         CompletableFuture<Boolean> result = new CompletableFuture<>();
-        residence.runWithAccess(() -> {
-            try {
-                player.teleportAsync(location).whenComplete((ok, error) -> {
-                    if (error != null) {
-                        result.completeExceptionally(error);
-                    } else {
-                        result.complete(Boolean.TRUE.equals(ok));
-                    }
-                });
-            } catch (Throwable t) {
-                result.completeExceptionally(t);
-            }
-        });
+        try {
+            player.teleportAsync(location, PlayerTeleportEvent.TeleportCause.ENDER_PEARL)
+                    .whenComplete((ok, error) -> {
+                        if (error != null) {
+                            result.completeExceptionally(error);
+                        } else {
+                            result.complete(Boolean.TRUE.equals(ok));
+                        }
+                    });
+        } catch (Throwable t) {
+            result.completeExceptionally(t);
+        }
         return result;
     }
 
     /**
      * 传送（目标世界未加载时记录日志并保持原地）。
      *
-     * <p><b>领地权限按次放行</b>：传送前临时打开相关领地的权限，传送完成后立刻恢复常态。
-     * 这样准备房间（FM.zb）与场地（FM）的传送权限在绝大多数时间都是关闭的，
-     * 玩家无法自行传进去；只有本插件把人送进去的那一瞬间是开的。</p>
+     * <p>传送使用 {@link PlayerTeleportEvent.TeleportCause#ENDER_PEARL} 来源，
+     * 目标世界未加载时记录日志并保持原地。</p>
      */
     public void teleport(Player player, Location location) {
-        // 传送前要下发领地指令（必须是权威线程），因此这里也做一次守卫：
-        // 从玩家自身线程（例如重生流程）发起的传送会被重排回权威线程再执行。
+        // 传送必须在权威线程上执行：从玩家自身线程（例如重生流程）发起的传送会被重排回权威线程再执行。
         if (!schedulers.guardAuthoritative(() -> teleport(player, location))) {
             return;
         }
@@ -2667,9 +2629,8 @@ public final class GameEngine {
             plugin.getLogger().warning("传送目标世界未加载，玩家 " + player.getName() + " 未被传送");
             return;
         }
-        // 权限只在“这一次传送真正完成之前”保持打开；teleportAsync 的完成通知
-        // 才是关闭时机，提前关闭会让传送被领地插件拦掉
-        residence.runWithAccess(() -> player.teleportAsync(location));
+        // 直接异步传送；传送来源统一标记为 ENDER_PEARL
+        player.teleportAsync(location, PlayerTeleportEvent.TeleportCause.ENDER_PEARL);
     }
 
     private Set<UUID> playersInRegion(Region region) {
