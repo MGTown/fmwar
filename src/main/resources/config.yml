@@ -110,7 +110,7 @@ timing:
   # 准备倒计时（准备按钮达成后开始）
   prepare-countdown: 10
   # 对局倒计时（秒）。归零后把所有玩家传送到决赛圈，并把本段计时重置为 duel-duration
-  game-duration: 480
+  game-duration: 380
   # 决赛圈阶段时长（秒）。game-duration 归零时用它重置计时器；
   # 这一段的 30 秒归零后才开始每秒扣血
   duel-duration: 30
